@@ -3,15 +3,24 @@ from string import punctuation, whitespace
 
 class DateSniffer:
 
-    SNIPPET_BEFORE = 20
-    SNIPPET_AFTER = 20
-    MONTHS = [
+    SNIPPET_BEFORE = 40
+    SNIPPET_AFTER = 40
+    MONTH = [
         'january', 'february', 'march', 'april',
         'may', 'june', 'july', 'august',
         'september', 'october', 'november', 'december'
     ]
+    MONTH_ABBR = [
+        'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+        'jul', 'aug', 'sept', 'oct', 'nov', 'dec'
+    ]
+    MONTH_DAYS = [
+        31, 29, 31, 30, 31, 30,
+        31, 31, 30, 31, 30, 31
+    ]
+    BORDERS = punctuation + whitespace
 
-    def __init__(self, year, month=None, keyword=None, distance=20):
+    def __init__(self, year, month=None, keyword=None, distance=10):
         if not isinstance(year, int) or year > 3000 or year < 1000:
             raise ValueError("Invalid year format")
 
@@ -32,8 +41,24 @@ class DateSniffer:
                 month_options.append('{:02}/{:02}/{:04}'.format(month, i, year))
         self.month_options = month_options
 
+    def find_isolated(self, keyword, text):
+        start = 0
+        locations = []
+        while True:
+            found = text.find(keyword, start)
+            if found == -1:
+                break
+            start = found + 1
+
+            if found > 0 and text[found - 1] not in self.BORDERS:
+                continue
+            if found + len(keyword) < len(text) and text[found + len(keyword)] not in self.BORDERS:
+                continue
+            locations.append(found)
+        return locations
+
     def find_month(self, snippet):
-        start = len(snippet) // 2 - self.distance
+        start = len(snippet) // 2 - (self.distance + 10)  # compensate month length
         stop = len(snippet) // 2 + self.distance
         if start < 0:
             start = 0
@@ -42,8 +67,10 @@ class DateSniffer:
 
         text = snippet[start:stop + 1].lower()
 
-        month_name = self.MONTHS[self.month - 1]
-        if month_name in text:
+        if self.find_isolated(keyword=self.MONTH[self.month - 1], text=text):
+            return True
+
+        if self.find_isolated(keyword=self.MONTH_ABBR[self.month - 1], text=text):
             return True
 
         for m in self.month_options:
@@ -51,6 +78,42 @@ class DateSniffer:
                 return True
 
         return False
+
+    def find_days(self, snippet):
+        """
+        Try to find isolated 1-{max days in the month} numbers.
+        If there month == number: check patterns mon/day/year, year-month-day, year/month/day
+        """
+        snippet = snippet.replace(self.year, ' ')
+        days = []
+        for i in range(1, self.MONTH_DAYS[self.month] + 1):
+            keys = [str(i)]
+            if i < 10:
+                keys.append('{:02}'.format(i))
+            for key in keys:
+                if key in snippet and self.find_isolated(keyword=key, text=snippet):
+                    days.append(i)
+
+        if not days:
+            return []
+
+        result = set()
+        for d in days:
+            if d == self.month:
+                if '{:02}/{:02}/{}'.format(self.month, d, self.year) in snippet:
+                    result.add(d)
+                elif '{}-{:02}-{:02}'.format(self.year, self.month, d) in snippet:
+                    result.add(d)
+                elif '{}/{:02}/{:02}'.format(self.year, self.month, d) in snippet:
+                    result.add(d)
+                elif '{}/{}/{}'.format(self.month, d, self.year) in snippet:
+                    result.add(d)
+                elif '{}/{}/{}'.format(self.year, self.month, d) in snippet:
+                    result.add(d)
+            else:
+                result.add(d)
+
+        return list(result)
 
     def find_keyword(self, snippet):
         start = len(snippet) // 2 - self.distance
@@ -62,21 +125,9 @@ class DateSniffer:
         return self.keyword.lower() in snippet.lower()[start:stop + 1]
 
     def sniff(self, text):
-        year_positions = []
-        start = 0
-        borders = punctuation + whitespace
-        while True:
-            found = text.find(self.year, start)
-            if found == -1:
-                break
-            start = found + 1
-            if found > 0 and text[found - 1] not in borders:
-                continue
-            if found + len(self.year) < len(text) - 1 and text[found + len(self.year)] not in borders:
-                continue
-            year_positions.append(found)
+        year_positions = self.find_isolated(keyword=self.year, text=text)
 
-        results = []
+        results = {}
         for pos in year_positions:
             snippet_start = pos - self.SNIPPET_BEFORE
             if snippet_start < 0:
@@ -86,14 +137,14 @@ class DateSniffer:
                 snippet_stop = len(text) - 1
 
             while snippet_start > 0:
-                if text[snippet_start] not in borders:
+                if text[snippet_start] not in self.BORDERS:
                     snippet_start -= 1
                 else:
                     snippet_start += 1
                     break
 
             while snippet_stop < len(text):
-                if text[snippet_stop] not in borders:
+                if text[snippet_stop] not in self.BORDERS:
                     snippet_stop += 1
                 else:
                     snippet_stop -= 1
@@ -107,12 +158,21 @@ class DateSniffer:
             if self.keyword and not self.find_keyword(snippet=snippet):
                 continue
 
+            if self.month:
+                days = self.find_days(snippet=snippet)
+            else:
+                days = []
+
             if snippet_start > 0:
                 snippet = '... ' + snippet
             if snippet_stop < len(text) - 1:
                 snippet = snippet + ' ...'
 
-            if snippet not in results:
-                results.append(snippet)
+            snippet = snippet.replace('\n', ' ').replace('\t', ' ')
 
-        return results
+            if snippet not in results:
+                results[snippet] = list(sorted(days))
+            else:
+                results[snippet] = list(sorted(set(results[snippet] + days)))
+
+        return dict(results)
